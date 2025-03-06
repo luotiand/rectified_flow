@@ -145,7 +145,7 @@ def main(config):
         plt.clf()
         plt.close()
         # 加载模型用于测试/评估
-    score_net.load_state_dict(torch.load(f"{para_path}model_name"))
+    score_net.load_state_dict(torch.load(f"{para_path}{model_name}.pth"))
     score_net.eval()  # <-- 添加这行切换到评估模式
     with torch.no_grad():
         # 评估 Operator Learning 和逆问题
