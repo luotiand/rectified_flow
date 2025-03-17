@@ -27,9 +27,6 @@ class MLP2d(nn.Module):
         self.net = nn.Sequential(
             nn.Linear(int(2 * dim**2), h_dim),
             nn.ReLU(),
-            nn.Linear(h_dim, h_dim),
-            nn.ReLU(),
-            nn.Dropout(0.5),   
             nn.Linear(h_dim, 4*h_dim),
             nn.ReLU(),
             nn.Linear(4*h_dim, int(dim**2))
@@ -46,80 +43,127 @@ class MLP2d(nn.Module):
         
         return z
 
+class MLP2d_add(nn.Module):
+    def __init__(self, dim: int = 100, h_dim: int = 1024) -> None:
+        super().__init__()
+        self.dim = dim
+        self.net = nn.Sequential(
+            nn.Linear(int(3 * dim**2), h_dim),
+            nn.ReLU(),
+            nn.Linear(h_dim, 4*h_dim),
+            nn.ReLU(),
+            nn.Linear(4*h_dim, int(dim**2))
+        )
 
+    def forward(self,a: torch.Tensor, x: torch.Tensor, t: torch.Tensor):
+        n = x.shape[0]
+        t = t.expand_as(x)
+        x = torch.cat((x, a), dim=-1)
+        x = torch.cat((x, t), dim=-1)
+        x = x.view(n, -1)
+        y = self.net(x)
+        z = y.view(n, int(self.dim), int(self.dim)) 
+        
+        return z
 
 
 class CNN(nn.Module):
-    def __init__(self, in_channels=2, out_channels=1, width=16):
+    def __init__(self, in_channels=2, out_channels=1, width=4):
         super().__init__()
         self.width = width
         self.device = "cuda"
         # Down-sampling layers
         self.down = nn.Sequential(
-            nn.Conv2d(in_channels, width, kernel_size=10, stride=2, padding=4),
+            nn.Conv2d(in_channels, width, kernel_size=6, stride=2, padding=2),
             nn.BatchNorm2d(width),
             nn.Sigmoid(),
-            nn.Conv2d(width, width * 4, kernel_size=8, stride=2, padding=3),
+            nn.Conv2d(width, width * 4, kernel_size=4, stride=2, padding=1),
             nn.BatchNorm2d(width * 4),
             nn.Sigmoid(),
         )
-
-        # Residual connection for down-sampling
-        self.res1 = nn.Sequential(
-            nn.Conv2d(in_channels, width * 4, kernel_size=10, stride=4, padding=3),
-            nn.BatchNorm2d(width * 4),
-            nn.Sigmoid(),
-        )
-
-        # Placeholder for fully connected layers (will initialize dynamically)
-        self.flat = nn.Identity()
-        self.res2 = nn.Identity()
-
         # Up-sampling layers
         self.up = nn.Sequential(
-            nn.ConvTranspose2d(width * 4, width, kernel_size=8, stride=2, padding=3),
+            nn.ConvTranspose2d(width * 4, width, kernel_size=6, stride=2, padding=2),
             nn.BatchNorm2d(width),
             nn.Sigmoid(),
-            nn.ConvTranspose2d(width, out_channels, kernel_size=10, stride=2, padding=4),
+            nn.ConvTranspose2d(width, out_channels, kernel_size=4, stride=2, padding=1),
         )
-
+        self.out = nn.Conv2d(out_channels,out_channels,kernel_size =1,stride = 1, padding=0)
     def forward(self, x: torch.Tensor, t: torch.Tensor):
         # Expand time input and stack with spatial input
         t = t.expand_as(x).to(self.device)  # Ensure `t` is on the same device as `x`
-        x = torch.stack([x, t], dim=1).to(self.device)  # Ensure `x` is on the same device as `t`
+        x_1 = torch.stack([x, t], dim=1).to(self.device)  # Ensure `x` is on the same device as `t`
 
         # Down-sampling + residual connection
-        y = self.down(x) + self.res1(x)
-
-        # Flatten for fully connected layers
-        n, c, h, w = y.shape
-        y_flat = y.view(n, -1).to(self.device)  # Ensure `y_flat` is on the correct device
-
-        # Dynamically initialize fully connected layers if not already
-        if isinstance(self.flat, nn.Identity):
-            flat_dim = c * h * w
-            output_dim = x.shape[-2] * x.shape[-1]  # 输入 x 的分辨率
-            
-            self.flat = nn.Sequential(
-                nn.Linear(flat_dim, flat_dim // 4),
-                nn.Tanh(),
-                nn.Linear(flat_dim // 4, flat_dim // 4),
-                nn.Tanh(),
-                nn.Linear(flat_dim // 4, flat_dim),
-            ).to(self.device)  # Move `flat` layers to the correct device
-
-            self.res2 = nn.Linear(flat_dim, flat_dim).to(self.device)  # Move `res2` to the correct device
-
-        # Fully connected processing + residual connection
-        y_flat = self.flat(y_flat) + self.res2(y_flat)
-
-        # Reshape to convolutional dimensions
-        y = y_flat.view(n, c, h, w)
-
-        # Up-sampling to match input resolution
-        z = self.up(y)
-        z = z.squeeze(1) 
+        x_2 = self.down(x_1)
+        x_3 = self.up(x_2)
+        x_4 = self.out(x_3)
+        z = x_4.squeeze(1)+x
         return z
+
+# class CNN_add(nn.Module):
+#     def __init__(self, in_channels=3, out_channels=1, width=16):
+#         super().__init__()
+#         self.width = width
+#         self.device = "cuda"
+#         # Down-sampling layers
+#         self.down = nn.Sequential(
+#             nn.Conv2d(in_channels, width, kernel_size=8, stride=2, padding=3),
+#             nn.Sigmoid(),
+#             nn.Conv2d(width, width * 4, kernel_size=4, stride=2, padding=1),
+#             nn.Sigmoid(),
+#             nn.Conv2d(width*4, width * 8, kernel_size=1, stride=1, padding=0),
+#             nn.Sigmoid(),
+#         )
+#         # Up-sampling layers
+#         self.up = nn.Sequential(
+#             nn.ConvTranspose2d(width * 8, width*4, kernel_size=1, stride=1, padding=0),
+#             nn.Sigmoid(),
+#             nn.ConvTranspose2d(width * 4, width, kernel_size=4, stride=2, padding=1),
+#             nn.Sigmoid(),
+#             nn.ConvTranspose2d(width, out_channels, kernel_size=8, stride=2, padding=3),
+#         )
+#         self.out = nn.Conv2d(out_channels,out_channels,kernel_size =1,stride = 1, padding=0)
+#     def forward(self,a: torch.Tensor, x: torch.Tensor, t: torch.Tensor):
+#         # Expand time input and stack with spatial input
+#         t = t.expand_as(x).to(self.device)  # Ensure `t` is on the same device as `x`
+#         x_1 = torch.stack([a, x, t], dim=1).to(self.device)  # Ensure `x` is on the same device as `t`
+#         # Down-sampling + residual connection
+#         x_2 = self.down(x_1)
+#         x_3 = self.up(x_2)
+#         x_4 = self.out(x_3)
+#         z = x_4.squeeze(1)+x
+#         return z
+
+class CNN_add(nn.Module):
+    def __init__(self, in_channels=3, out_channels=1, width=16):
+        super().__init__()
+        self.width = width
+        self.device = "cuda"
+        # Down-sampling layers
+        self.down = nn.Sequential(
+            nn.Conv2d(in_channels, width, kernel_size=1, stride=1, padding=0),
+            nn.Sigmoid(),
+            nn.Conv2d(width, width * 8, kernel_size=1, stride=1, padding=0),
+            nn.Sigmoid(),
+        )
+        # Up-sampling layers
+        self.up = nn.Sequential(
+            nn.ConvTranspose2d(width * 8, width, kernel_size=1, stride=1, padding=0),
+            nn.Sigmoid(),
+            nn.ConvTranspose2d(width, out_channels, kernel_size=1, stride=1, padding=0),
+        )
+        self.out = nn.Conv2d(out_channels,out_channels,kernel_size =1,stride = 1, padding=0)
+    def forward(self,a: torch.Tensor, x: torch.Tensor, t: torch.Tensor):
+        # Expand time input and stack with spatial input
+        t = t.expand_as(x).to(self.device)  # Ensure `t` is on the same device as `x`
+        x_1 = torch.stack([a, x, t], dim=1).to(self.device)  # Ensure `x` is on the same device as `t`
+        # Down-sampling + residual connection
+        x_2 = self.down(x_1)
+        x_3 = self.up(x_2)
+        z = x_3.squeeze(1)+x
+        return z
+
 class FourierLayer2D(nn.Module):
     def __init__(self, in_channels, out_channels, modes):
         """

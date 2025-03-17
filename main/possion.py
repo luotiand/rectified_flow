@@ -53,7 +53,7 @@ def main(config):
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
 
     # 动态加载模型类
-    scorenet_model = globals()[scorenet_model_class](dim=int(T/eq_dt), h_dim=h_dim)
+    scorenet_model = globals()[scorenet_model_class](in_channels=2, out_channels=1, width=4)
     print(f"Model file will be saved as: {model_name}")
 
     # 检查多 GPU 环境
@@ -86,7 +86,7 @@ def main(config):
         opt = optim.Adam(params=score_net.parameters(), lr=lr, betas=(0.5, 0.999))
         criterion = nn.MSELoss()
 
-        scaler = torch.cuda.amp.GradScaler()  # 使用混合精度训练
+        # scaler = torch.cuda.amp.GradScaler()  # 使用混合精度训练
 
         # 训练
         training_loss = [None for _ in range(niter)]
@@ -101,17 +101,12 @@ def main(config):
                 t = torch.rand(batch_size, 1).to(device)
                 t = t.view(batch_size, *([1] * (len(a_.shape) - 1)))
                 opt.zero_grad()
-
-                with torch.cuda.amp.autocast():  # 混合精度训练
-                    xt_ = rf.straight_process(a_, x_, t)
-                    exact_score = x_ - a_
-                    score = score_net(xt_, t)
-                    loss = squared_absolute_error_loss(exact_score, score)
-
-                scaler.scale(loss).backward()
-                scaler.step(opt)
-                scaler.update()
-
+                xt_ = rf.straight_process(a_, x_, t)
+                exact_score = x_ - a_
+                score = score_net(xt_, t)
+                loss = criterion(exact_score, score)
+                loss.backward()
+                opt.step()
                 del a_, x_, t, xt_, exact_score, score  # 删除未使用的变量以释放显存
                 torch.cuda.empty_cache()
 
@@ -129,7 +124,7 @@ def main(config):
                 print(f"Elapsed time for last 5 iterations: {elapsed_time:.2f} seconds")
                 print(f"Estimated remaining time: {estimated_remaining_time/60:.2f} minutes")
 
-        torch.save(score_net.state_dict(), f"{para_path}{model_name}.pth")
+        torch.save(score_net.state_dict(), f"{para_path}{model_name}")
 
         # visualize loss curve
         fig, ax = plt.subplots()
@@ -145,7 +140,7 @@ def main(config):
         plt.clf()
         plt.close()
         # 加载模型用于测试/评估
-    score_net.load_state_dict(torch.load(f"{para_path}{model_name}.pth"))
+        score_net.load_state_dict(torch.load(f"{para_path}{model_name}"))
     score_net.eval()  # <-- 添加这行切换到评估模式
     with torch.no_grad():
         # 评估 Operator Learning 和逆问题
