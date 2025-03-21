@@ -9,7 +9,7 @@ eq_T = 1.0 # 方程采样总长
 N = 10000  # a数量
 niter = 2000
 lr = 1e-4
-batch_size = 2048  # 减少批处理大小
+batch_size = 8192  # 减少批处理大小
 T = 1.0
 eq_dt = 0.01
 rf_dt = 0.01
@@ -18,7 +18,7 @@ train = 1
 rf = RectFlow()
 eq = PoissonEquation()
 # 模型相关
-scorenet_model_class = "MLP2d_add"  #  "MLP1d", "MLP2d", "FNO", "CNN"
+scorenet_model_class = "MLP2d_ns"  #  "MLP1d", "MLP2d", "FNO", "CNN"
 
 # GPU 设置
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')

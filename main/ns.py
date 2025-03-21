@@ -4,14 +4,14 @@ import torch.optim as optim
 import numpy as np
 import os
 import subprocess  # 引入 subprocess 模块
-from script.plot import plot_2d_results, plot_results, hinton
+from script.plot import plot_2d_results, plot_results, hinton,plot_3d_compare_with_diff
 from script.ode_data import Eq1, WaveEquation, PoissonEquation, HeatEquation
 from rectified.rectified_flow import RectFlow
 import time
 import matplotlib.pyplot as plt
-from script.dataset import MyDataset
+from script.dataset import MyDataset_ns
 from torch.utils.data import DataLoader
-from scorenet.scorenet import MLP1d, MLP2d, FNO, CNN,MLP2d_add,CNN_add
+from scorenet.scorenet import MLP1d, MLP2d, FNO, CNN,MLP2d_ns,CNN_add
 import argparse
 torch.set_default_dtype(torch.double)
 torch.backends.cudnn.benchmark = True
@@ -49,11 +49,34 @@ def main(config):
     rf = config['rf']
     eq = config['eq']
 
-    dataset = MyDataset(eq, dt=eq_dt, N=N)
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
+    train_dataset = MyDataset_ns(
+        file_path='/remote-sync/luotian.ding/my_project/rectified_flow/data/ns/ns_V1e-3_N5000_T50.mat',
+        input_steps=10,
+        pred_steps=10,
+        train=True
+    )
+    
+    test_dataset = MyDataset_ns(
+        file_path='/remote-sync/luotian.ding/my_project/rectified_flow/data/ns/ns_V1e-3_N5000_T50.mat',
+        input_steps=10,
+        pred_steps=10,
+        train=False
+    )
+    dataloader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        drop_last=True
+    )
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        drop_last=True
+    )
 
     # 动态加载模型类
-    scorenet_model = globals()[scorenet_model_class]()
+    scorenet_model = globals()[scorenet_model_class](dim = 64, h_dim = 1024)
     print(f"Model file will be saved as: {model_name}")
 
     # 检查多 GPU 环境
@@ -69,9 +92,9 @@ def main(config):
 
 
     # 初始化数据
-    a, x = eq.sample(dt=eq_dt, N=10)
-    a = torch.from_numpy(a).to(device)
-    x = torch.from_numpy(x).to(device)
+    sample_a, sample_x = test_dataset.get_full_data()
+    a = sample_a.to(device).to(dtype=torch.float64)
+    x = sample_x.to(device).to(dtype=torch.float64)
 
     # 初始化 score_net 模型，无论训练与否都需加载
     score_net = scorenet_model.to(device)
@@ -86,7 +109,6 @@ def main(config):
         opt = optim.Adam(params=score_net.parameters(), lr=lr, betas=(0.5, 0.999))
         criterion = nn.MSELoss()
 
-        scaler = torch.cuda.amp.GradScaler()  # 使用混合精度训练
 
         # 训练
         training_loss = [None for _ in range(niter)]
@@ -95,22 +117,19 @@ def main(config):
 
         for it in range(niter):
             for a_, x_ in dataloader:
-                a_ = a_.to(device)
-                x_ = x_.to(device)
+                a_ = a_.to(device).to(dtype=torch.float64)
+                x_ = x_.to(device).to(dtype=torch.float64)
 
-                t = torch.rand(batch_size, 1).to(device)
+                t = torch.rand(batch_size, 1).to(device).to(dtype=torch.float64)
                 t = t.view(batch_size, *([1] * (len(a_.shape) - 1)))
                 opt.zero_grad()
+                xt_ = rf.straight_process(a_, x_, t)
+                exact_score = x_ - a_
+                score = score_net(a_, xt_, t)
+                loss = criterion(exact_score, score)
 
-                with torch.cuda.amp.autocast():  # 混合精度训练
-                    xt_ = rf.straight_process(a_, x_, t)
-                    exact_score = x_ - a_
-                    score = score_net(a_, xt_, t)
-                    loss = criterion(exact_score, score)
-
-                scaler.scale(loss).backward()
-                scaler.step(opt)
-                scaler.update()
+                loss.backward()
+                opt.step()
 
                 del a_, x_, t, xt_, exact_score, score  # 删除未使用的变量以释放显存
                 torch.cuda.empty_cache()
@@ -162,26 +181,39 @@ def main(config):
             score = score_net(x, yt[-1], T - t)
             yt_ = rf.reverse_process(xt=yt[-1], score=score, dt=rf_dt)
             yt.append(yt_)
-
-    # 绘制结果
-    plot_2d_results(
-        data1=xt[-1],
+    print("start")
+    abs_error = np.abs(xt[-1] - x)
+    mae = np.mean(abs_error)
+    
+    # 计算相对误差（避免除以零）
+    epsilon = 1e-10  # 小的正数，防止除以零
+    # 只在非零值上计算相对误差
+    mask = np.abs(xt[-1]) > epsilon
+    rel_error = np.abs((xt[-1] - x)[mask] / (np.abs(data1[mask]) + epsilon)) * 100
+    mre = np.mean(rel_error)
+    
+    # 计算其他误差指标
+    rmse = np.sqrt(np.mean(np.square(xt[-1] - x)))
+    
+    # 打印结果
+    print("\n" + "="*50)
+    print("误差统计 (取所有样本平均)")
+    print("="*50)
+    print(f"平均绝对误差 (MAE): {mae:.6f}")
+    print(f"平均相对误差 (MRE): {mre:.6f}%")
+    print(f"均xt[-1]方根误差 (RMSE): {rmse:.6f}")
+    print("="*50 + "\n")
+    plot_3d_compare_with_diff(
+        data1=xt[-1], 
         data2=x,
-        labels=['xt (2D)', 'x (exact 2D)'],
-        title='Operator Learning: xt vs x (2D)',
-        filename=f'{save_path}{scorenet_model_class.lower()}_operator_learning_2d.png'
+        title='Operator Learning: xt vs x (3D)',  # 自定义三个子图标题
+        cmap_main='plasma',  # 主数据颜色映射
+        cmap_diff='coolwarm',  # 差异场颜色映射
+        elev=40,  # 俯视角度
+        azim=-90, # 水平旋转角度
+        filename=f'{save_path}{scorenet_model_class.lower()}_operator_learning_3d.png'       
     )
 
-    plot_2d_results(
-        data1=yt[-1],
-        data2=a,
-        labels=['yt (2D)', 'a (exact 2D)'],
-        title='Inverse Problem: yt vs a (2D)',
-        filename=f'{save_path}{scorenet_model_class.lower()}_inverse_problem_2d.png'
-    )
-
-    print(f"xt[-1] shape: {xt[-1].shape}, x shape: {x.shape}")
-    print(f"yt[-1] shape: {yt[-1].shape}, a shape: {a.shape}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

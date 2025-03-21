@@ -4,3 +4,7 @@ result/**
 modelpara/**
 data/**
 .DS_Store
+.png
+.mat
+.txt
+.pth

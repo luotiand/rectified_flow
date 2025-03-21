@@ -1,6 +1,7 @@
 import torch.nn as nn
 import torch
 import torch.nn.functional as F
+torch.set_default_dtype(torch.double)
 class MLP1d(nn.Module):
     def __init__(self, dim: int = 100, h_dim: int = 200) -> None:
         super().__init__()
@@ -57,15 +58,56 @@ class MLP2d_add(nn.Module):
 
     def forward(self,a: torch.Tensor, x: torch.Tensor, t: torch.Tensor):
         n = x.shape[0]
+        a_mean = a.mean(dim=(1,2), keepdim=True)  # [bs,1,1]
+        a_std = a.std(dim=(1,2), keepdim=True) + 1e-6
+        a = (a - a_mean) / a_std
+        x_mean = x.mean(dim=(1,2), keepdim=True)  # [bs,1,1]
+        x_std = x.std(dim=(1,2), keepdim=True) + 1e-6
+        x = (x - x_mean) / x_std
+        t = t-0.5
         t = t.expand_as(x)
         x = torch.cat((x, a), dim=-1)
         x = torch.cat((x, t), dim=-1)
         x = x.view(n, -1)
         y = self.net(x)
         z = y.view(n, int(self.dim), int(self.dim)) 
-        
+        z = z*a_std+a_mean
         return z
 
+class MLP2d_ns(nn.Module):
+    def __init__(self, dim: int = 100, h_dim: int = 1024) -> None:
+        super().__init__()
+        self.dim = dim
+        self.net = nn.Sequential(
+            nn.Linear(int(3 * dim**2), h_dim),
+            nn.ReLU(),
+            nn.Linear(h_dim, 4*h_dim),
+            nn.ReLU(),
+            nn.Linear(4*h_dim, 4*h_dim),
+            nn.ReLU(),
+            nn.Linear(4*h_dim, int(dim**2))
+        )
+        
+
+    def forward(self,a: torch.Tensor, x: torch.Tensor, t: torch.Tensor):
+        n = x.shape[0]
+        m = x.shape[1]
+        a = a.to(dtype=torch.float64)
+        a_mean = a.mean(dim=(1,2), keepdim=True)  # [bs,1,1]
+        a_std = a.std(dim=(1,2), keepdim=True) + 1e-6
+        a = (a - a_mean) / a_std
+        x_mean = x.mean(dim=(1,2), keepdim=True)  # [bs,1,1]
+        x_std = x.std(dim=(1,2), keepdim=True) + 1e-6
+        x = (x - x_mean) / x_std
+        t = t-0.5
+        t = t.expand_as(x)
+        x = torch.cat((x, a), dim=-1)
+        x = torch.cat((x, t), dim=-1)
+        x = x.view(n, m,-1)
+        y = self.net(x)
+        z = y.view(n,m, int(self.dim), int(self.dim)) 
+        z = z*a_std+a_mean
+        return z
 
 class CNN(nn.Module):
     def __init__(self, in_channels=2, out_channels=1, width=4):
@@ -142,19 +184,26 @@ class CNN_add(nn.Module):
         self.device = "cuda"
         # Down-sampling layers
         self.down = nn.Sequential(
-            nn.Conv2d(in_channels, width, kernel_size=1, stride=1, padding=0),
-            nn.Sigmoid(),
-            nn.Conv2d(width, width * 8, kernel_size=1, stride=1, padding=0),
-            nn.Sigmoid(),
+            nn.Conv2d(in_channels, width, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(width, width * 4, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
         )
         # Up-sampling layers
         self.up = nn.Sequential(
-            nn.ConvTranspose2d(width * 8, width, kernel_size=1, stride=1, padding=0),
-            nn.Sigmoid(),
-            nn.ConvTranspose2d(width, out_channels, kernel_size=1, stride=1, padding=0),
+            nn.ConvTranspose2d(width * 4, width, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.ConvTranspose2d(width, out_channels, kernel_size=3, stride=1, padding=1),
         )
         self.out = nn.Conv2d(out_channels,out_channels,kernel_size =1,stride = 1, padding=0)
     def forward(self,a: torch.Tensor, x: torch.Tensor, t: torch.Tensor):
+        a_mean = a.mean(dim=(1,2), keepdim=True)  # [bs,1,1]
+        a_std = a.std(dim=(1,2), keepdim=True) + 1e-6
+        a = (a - a_mean) / a_std
+        x_mean = x.mean(dim=(1,2), keepdim=True)  # [bs,1,1]
+        x_std = x.std(dim=(1,2), keepdim=True) + 1e-6
+        x = (x - x_mean) / x_std
+        t = t-0.5
         # Expand time input and stack with spatial input
         t = t.expand_as(x).to(self.device)  # Ensure `t` is on the same device as `x`
         x_1 = torch.stack([a, x, t], dim=1).to(self.device)  # Ensure `x` is on the same device as `t`
