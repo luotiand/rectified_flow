@@ -13,8 +13,24 @@ from script.dataset import MyDataset_ns
 from torch.utils.data import DataLoader
 from scorenet.scorenet import MLP1d, MLP2d, FNO, CNN,MLP2d_ns,CNN_add
 import argparse
+import logging
 torch.set_default_dtype(torch.double)
 torch.backends.cudnn.benchmark = True
+
+def setup_logger(save_path):
+    """配置日志记录器"""
+    if not os.path.exists(save_path):
+        os.makedirs(save_path)
+    
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(os.path.join(save_path, 'training.log')),
+            logging.StreamHandler()
+        ]
+    )
+
 
 def squared_absolute_error_loss(output, target):
     return torch.mean((torch.abs(output - target)) ** 2)
@@ -33,6 +49,8 @@ def main(config):
     # 从配置字典中提取参数
     save_path = config['save_path']
     para_path = config['para_path']
+    setup_logger(save_path)
+    logging.info("Initializing training process...")
     eq_T = config['eq_T']
     N = config['N']
     niter = config['niter']
@@ -62,6 +80,8 @@ def main(config):
         pred_steps=10,
         train=False
     )
+    logging.info(f"Training dataset size: {len(train_dataset)}")
+    logging.info(f"Test dataset size: {len(test_dataset)}")
     dataloader = DataLoader(
         train_dataset,
         batch_size=batch_size,
@@ -74,21 +94,20 @@ def main(config):
         shuffle=False,
         drop_last=True
     )
-
     # 动态加载模型类
     scorenet_model = globals()[scorenet_model_class](dim = 64, h_dim = 1024)
-    print(f"Model file will be saved as: {model_name}")
+    logging.info(f"Model file will be saved as: {model_name}")
 
     # 检查多 GPU 环境
     free_gpu_index = get_free_gpu()
     device = torch.device(f"cuda:{free_gpu_index}" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
-
+    logging.info(f"Using device: {device}")
+    
     if device.type == 'cuda':
-        print(f"Using {torch.cuda.device_count()} GPUs")
-        print(f"GPU Name: {torch.cuda.get_device_name(free_gpu_index)}")
-        print(f"CUDA Available: {torch.cuda.is_available()}")
-        print(f"Current CUDA Device: {torch.cuda.current_device()}")
+        logging.info(f"Detected {torch.cuda.device_count()} GPU(s)")
+        logging.info(f"GPU Name: {torch.cuda.get_device_name(free_gpu_index)}")
+        logging.info(f"CUDA Memory Usage: Allocated = {torch.cuda.memory_allocated(device)/1024**2:.2f} MB, "
+                     f"Cached = {torch.cuda.memory_reserved(device)/1024**2:.2f} MB")
 
 
     # 初始化数据
@@ -100,15 +119,11 @@ def main(config):
     score_net = scorenet_model.to(device)
     if torch.cuda.device_count() > 1:
         score_net = nn.DataParallel(score_net)
+        logging.info(f"Using DataParallel on {torch.cuda.device_count()} GPUs")
 
     if train:
-        if device.type == 'cuda':
-            print(f"GPU Memory Usage: {torch.cuda.memory_allocated(device) / 1024 ** 2:.2f} MB")
-            print(f"GPU Max Memory Usage: {torch.cuda.max_memory_allocated(device) / 1024 ** 2:.2f} MB")
-
         opt = optim.Adam(params=score_net.parameters(), lr=lr, betas=(0.5, 0.999))
         criterion = nn.MSELoss()
-
 
         # 训练
         training_loss = [None for _ in range(niter)]
@@ -130,23 +145,23 @@ def main(config):
 
                 loss.backward()
                 opt.step()
-
                 del a_, x_, t, xt_, exact_score, score  # 删除未使用的变量以释放显存
                 torch.cuda.empty_cache()
-
             training_loss[it] = loss.item()
 
-            if ((it + 1) % (niter * 1 // 8) == 0):
-                opt.param_groups[0]["lr"] /= 8
+            if (it+1) % (niter//8) == 0:
+                new_lr = opt.param_groups[0]['lr'] / 8
+                logging.info(f"Reducing learning rate from {opt.param_groups[0]['lr']} to {new_lr}")
+                opt.param_groups[0]['lr'] = new_lr
 
             if (it + 1) % 5 == 0:
                 iter_end_time = time.time()
                 elapsed_time = iter_end_time - iter_start_time
                 iter_start_time = iter_end_time
                 estimated_remaining_time = (niter - it - 1) * (elapsed_time / 5)
-                print(f"Iteration {it + 1}/{niter}, Loss: {loss.item():.4f}")
-                print(f"Elapsed time for last 5 iterations: {elapsed_time:.2f} seconds")
-                print(f"Estimated remaining time: {estimated_remaining_time/60:.2f} minutes")
+                logging.info(f"Iteration {it + 1}/{niter}, Loss: {loss.item():.8f}")
+                logging.info(f"Elapsed time for last 5 iterations: {elapsed_time:.2f} seconds")
+                logging.info(f"Estimated remaining time: {estimated_remaining_time/60:.2f} minutes")
 
         torch.save(score_net.state_dict(), f"{para_path}{model_name}")
 
@@ -181,39 +196,44 @@ def main(config):
             score = score_net(x, yt[-1], T - t)
             yt_ = rf.reverse_process(xt=yt[-1], score=score, dt=rf_dt)
             yt.append(yt_)
-    print("start")
-    abs_error = np.abs(xt[-1] - x)
+    abs_error = np.abs((xt[-1] - x).cpu().detach().numpy())    
     mae = np.mean(abs_error)
-    
     # 计算相对误差（避免除以零）
-    epsilon = 1e-10  # 小的正数，防止除以零
+    epsilon = 1e-6  # 小的正数，防止除以零
     # 只在非零值上计算相对误差
-    mask = np.abs(xt[-1]) > epsilon
-    rel_error = np.abs((xt[-1] - x)[mask] / (np.abs(data1[mask]) + epsilon)) * 100
+    mask = np.abs(xt[-1].cpu().detach().numpy()) > epsilon
+    rel_error = np.abs(((xt[-1] - x).cpu().detach().numpy())[mask] / (np.abs((x.cpu().detach().numpy())[mask]) + epsilon)) * 100
     mre = np.mean(rel_error)
     
     # 计算其他误差指标
-    rmse = np.sqrt(np.mean(np.square(xt[-1] - x)))
+    rmse = np.sqrt(np.mean(np.square((xt[-1] - x).cpu().detach().numpy())))
     
     # 打印结果
-    print("\n" + "="*50)
-    print("误差统计 (取所有样本平均)")
-    print("="*50)
-    print(f"平均绝对误差 (MAE): {mae:.6f}")
-    print(f"平均相对误差 (MRE): {mre:.6f}%")
-    print(f"均xt[-1]方根误差 (RMSE): {rmse:.6f}")
-    print("="*50 + "\n")
+    logging.info("\n" + "="*50)
+    logging.info("误差统计 (取所有样本平均)")
+    logging.info("="*50)
+    logging.info(f"平均绝对误差 (MAE): {mae:.6f}")
+    logging.info(f"平均相对误差 (MRE): {mre:.6f}%")
+    logging.info(f"均xt[-1]方根误差 (RMSE): {rmse:.6f}")
+    logging.info("="*50 + "\n")
+    plot_2d_results(
+        data1=torch.mean(xt[-1],dim = 1),
+        data2=torch.mean(x,dim = 1),
+        labels=['xt (2D)', 'x (exact 2D)'],
+        title='Operator Learning: xt vs x (2D)',
+        filename=f'{save_path}{scorenet_model_class.lower()}_operator_learning_2d.png'
+    )
+
     plot_3d_compare_with_diff(
-        data1=xt[-1], 
-        data2=x,
-        title='Operator Learning: xt vs x (3D)',  # 自定义三个子图标题
+        data1=xt[-1].cpu().detach().numpy(), 
+        data2=x.cpu().detach().numpy(),
+        titles='Operator Learning: xt vs x (3D)',  # 自定义三个子图标题
         cmap_main='plasma',  # 主数据颜色映射
         cmap_diff='coolwarm',  # 差异场颜色映射
         elev=40,  # 俯视角度
         azim=-90, # 水平旋转角度
         filename=f'{save_path}{scorenet_model_class.lower()}_operator_learning_3d.png'       
     )
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

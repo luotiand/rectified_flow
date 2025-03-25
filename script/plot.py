@@ -61,11 +61,14 @@ def plot_3d_compare_with_diff(data1, data2, titles, cmap_main='viridis', cmap_di
     
     # 绘制各子图
     _plot_3d_field(axes[0], data1_avg, title=titles[0], cmap=cmap_main, elev=elev, azim=azim)
+    print(1)
     _plot_3d_field(axes[1], data2_avg, title=titles[1], cmap=cmap_main, elev=elev, azim=azim)
     _plot_3d_diff(axes[2], diff, title=titles[2], cmap=cmap_diff, elev=elev, azim=azim)
+    print(2)
     plt.tight_layout()
     plt.savefig(filename, dpi=300)
     plt.show()
+    print(3)
     plt.close()
 def _plot_3d_field(ax, data, title, cmap, elev, azim):
     """绘制单个 3D 场"""
@@ -149,20 +152,6 @@ def _plot_3d_diff(ax, diff, title, cmap, elev, azim):
     # 添加颜色条
     sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(-vmax, vmax))
     plt.colorbar(sm, ax=ax, shrink=0.6, pad=0.1)
-# 使用示例 -------------------------------------------------
-# 生成示例数据
-data1 = np.random.randn(100, 10, 64, 64).clip(-1,1)  # (N_test=100, T=10, H=64, W=64)
-data2 = 0.8 * data1 + np.random.randn(100, 10, 64, 64) * 0.2
-
-# 可视化对比
-plot_3d_compare_with_diff(
-    data1, data2,
-    titles=["High-Resolution Model", "Low-Resolution Model", "Model Difference"],
-    cmap_main='viridis',
-    cmap_diff='seismic',
-    elev=30,
-    azim=-120
-)
 
 def hinton(matrix, max_weight=None, ax=None):
     """Draw Hinton diagram for visualizing a weight matrix."""

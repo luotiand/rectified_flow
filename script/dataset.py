@@ -98,6 +98,11 @@ class MyDataset_ns(Dataset):
         
         # 添加通道维度 (适配CNN输入)
         return x_sample, y_sample # (10, 1, 64, 64)
+    def get_full_data(self):
+        """返回整个数据集（测试时使用）"""
+        x_full = torch.from_numpy(self.x[self.indices])  # (N_test, 10, 64, 64)
+        y_full = torch.from_numpy(self.y[self.indices])  # (N_test, 10, 64, 64)
+        return x_full, y_full
 
 # 使用示例 -------------------------------------------------------------------
 if __name__ == "__main__":

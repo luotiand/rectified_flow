@@ -74,40 +74,121 @@ class MLP2d_add(nn.Module):
         z = z*a_std+a_mean
         return z
 
-class MLP2d_ns(nn.Module):
-    def __init__(self, dim: int = 100, h_dim: int = 1024) -> None:
-        super().__init__()
-        self.dim = dim
-        self.net = nn.Sequential(
-            nn.Linear(int(3 * dim**2), h_dim),
-            nn.ReLU(),
-            nn.Linear(h_dim, 4*h_dim),
-            nn.ReLU(),
-            nn.Linear(4*h_dim, 4*h_dim),
-            nn.ReLU(),
-            nn.Linear(4*h_dim, int(dim**2))
-        )
+# class MLP2d_ns(nn.Module):
+#     def __init__(self, dim: int = 100, h_dim: int = 1024) -> None:
+#         super().__init__()
+#         self.dim = dim
+#         self.net = nn.Sequential(
+#             nn.Linear(int(3 * dim**2), h_dim),
+#             nn.ReLU(),
+#             nn.Linear(h_dim, 4*h_dim),
+#             nn.ReLU(),
+#             nn.Linear(4*h_dim, 4*h_dim),
+#             nn.ReLU(),
+#             nn.Linear(4*h_dim, int(dim**2))
+#         )
         
 
-    def forward(self,a: torch.Tensor, x: torch.Tensor, t: torch.Tensor):
-        n = x.shape[0]
-        m = x.shape[1]
-        a = a.to(dtype=torch.float64)
-        a_mean = a.mean(dim=(1,2), keepdim=True)  # [bs,1,1]
-        a_std = a.std(dim=(1,2), keepdim=True) + 1e-6
-        a = (a - a_mean) / a_std
-        x_mean = x.mean(dim=(1,2), keepdim=True)  # [bs,1,1]
-        x_std = x.std(dim=(1,2), keepdim=True) + 1e-6
-        x = (x - x_mean) / x_std
-        t = t-0.5
-        t = t.expand_as(x)
-        x = torch.cat((x, a), dim=-1)
-        x = torch.cat((x, t), dim=-1)
-        x = x.view(n, m,-1)
-        y = self.net(x)
-        z = y.view(n,m, int(self.dim), int(self.dim)) 
-        z = z*a_std+a_mean
-        return z
+#     def forward(self,a: torch.Tensor, x: torch.Tensor, t: torch.Tensor):
+#         n = x.shape[0]
+#         m = x.shape[1]
+#         a = a.to(dtype=torch.float64)
+#         a_mean = a.mean(dim=(1,2), keepdim=True)  # [bs,1,1]
+#         a_std = a.std(dim=(1,2), keepdim=True) + 1e-6
+#         a = (a - a_mean) / a_std
+#         x_mean = x.mean(dim=(1,2), keepdim=True)  # [bs,1,1]
+#         x_std = x.std(dim=(1,2), keepdim=True) + 1e-6
+#         x = (x - x_mean) / x_std
+#         t = t-0.5
+#         t = t.expand_as(x)
+#         x = torch.cat((x, a), dim=-1)
+#         x = torch.cat((x, t), dim=-1)
+#         x = x.view(n, m,-1)
+#         y = self.net(x)
+#         z = y.view(n,m, int(self.dim), int(self.dim)) 
+#         z = z*a_std+a_mean
+#         return z
+
+class MLP2d_ns(nn.Module):
+    def __init__(self, 
+                 dim: int = 64, 
+                 h_dim: int = 1024,
+                 time_steps: int = 10,
+                 k_list: list = [1, 2]):
+        super().__init__()
+        self.dim = dim
+        self.time_steps = time_steps
+        self.k_list = k_list
+        
+        # 时间核参数化
+        self.time_kernel = nn.Sequential(
+            nn.Linear(6, dim**2),  # 6个特征 → 空间维度
+            nn.ReLU(),
+            nn.Linear(dim**2, dim**2)
+        )
+        
+        # 主网络 (输入维度调整为3*dim²)
+        self.main_net = nn.Sequential(
+            nn.Linear(3*dim**2, h_dim),  # 新增x特征
+            nn.ReLU(),
+            nn.Linear(1024, 4*h_dim),
+            nn.ReLU(),
+            nn.Linear(4*h_dim, dim**2)
+        )
+
+    def generate_time_features(self, t: torch.Tensor) -> torch.Tensor:
+        """生成6通道时间特征"""
+        # 原始t形状: [bs, 1, 1, 1]
+        bs = t.shape[0]
+        
+        # 扩展至 [bs, time_steps, 1]
+        t_expanded = t.squeeze(-1).squeeze(-1)  # [bs, 1]
+        t_expanded = t_expanded.unsqueeze(1).expand(-1, self.time_steps, -1)  # [bs, T, 1]
+        
+        # 生成6个核特征
+        features = []
+        for k in self.k_list:
+            # clip核
+            features.append((t_expanded / k).clamp(0, 1))
+            # exp核
+            features.append(1 - torch.exp(-t_expanded / k))
+            # sin核
+            features.append(torch.sin(t_expanded * torch.pi / k))
+        
+        # 合并特征 [bs, T, 6]
+        return torch.cat(features, dim=-1)
+
+    def forward(self, a: torch.Tensor, x: torch.Tensor, t: torch.Tensor):
+        # 输入形状验证
+        assert a.dim() == 4, "输入a应为4维张量"
+        bs, T, H, W = a.shape
+        
+        # 标准化x
+        x_mean = x.mean(dim=(2,3), keepdim=True)
+        x_std = x.std(dim=(2,3), keepdim=True) + 1e-6
+        x_norm = (x - x_mean) / x_std
+        a_mean = a.mean(dim=(2,3), keepdim=True)
+        a_std = a.std(dim=(2,3), keepdim=True) + 1e-6
+        a_norm = (a - a_mean) / a_std
+        # 生成时间特征 [bs, T, 6]
+        time_feat = self.generate_time_features(t)
+        
+        # 时间特征映射到空间维度 [bs, T, H*W]
+        time_feat = self.time_kernel(time_feat)  # [bs, T, H*W]
+        time_feat = time_feat.view(bs, T, H, W)  # [bs, T, H, W]
+        
+        # 特征融合 (新增x)
+        combined = torch.cat([
+            a_norm.view(bs, T, -1),    # 原始a特征 [bs, T, H*W]
+            x_norm.view(bs, T, -1), # 标准化x特征 [bs, T, H*W]
+            time_feat.view(bs, T, -1) # 时间特征 [bs, T, H*W]
+        ], dim=-1)  # [bs, T, 3*H*W]
+        
+        # 主网络处理
+        output = self.main_net(combined)  # [bs, T, H*W]
+        
+        # 反标准化恢复x尺度
+        return output.view(bs, T, H, W) * x_std + x_mean
 
 class CNN(nn.Module):
     def __init__(self, in_channels=2, out_channels=1, width=4):
