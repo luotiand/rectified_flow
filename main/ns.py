@@ -95,7 +95,7 @@ def main(config):
         drop_last=True
     )
     # 动态加载模型类
-    scorenet_model = globals()[scorenet_model_class](dim = 64, h_dim = 1024)
+    scorenet_model = globals()[scorenet_model_class](dim = 64, h_dim = 256)
     logging.info(f"Model file will be saved as: {model_name}")
 
     # 检查多 GPU 环境
@@ -184,38 +184,21 @@ def main(config):
     with torch.no_grad():
         # 评估 Operator Learning 和逆问题
         xt = [a]
+        n = len(xt)
+        print(len(xt[0]))
+        print(n)
         for t in np.arange(start=0.0, stop=T, step=rf_dt):
-            t = torch.ones_like(x) * t
+            t = torch.ones(len(xt[0]), 1, 1, 1, device=x.device) * t
             score = score_net(a, xt[-1], t)
             xt_ = rf.forward_process(xt=xt[-1], score=score, dt=rf_dt)
             xt.append(xt_)
 
         yt = [x]
         for t in np.arange(start=0.0, stop=T, step=rf_dt):
-            t = torch.ones_like(x) * t
+            t = torch.ones(len(xt[0]), 1, 1, 1, device=x.device) * t
             score = score_net(x, yt[-1], T - t)
             yt_ = rf.reverse_process(xt=yt[-1], score=score, dt=rf_dt)
             yt.append(yt_)
-    abs_error = np.abs((xt[-1] - x).cpu().detach().numpy())    
-    mae = np.mean(abs_error)
-    # 计算相对误差（避免除以零）
-    epsilon = 1e-6  # 小的正数，防止除以零
-    # 只在非零值上计算相对误差
-    mask = np.abs(xt[-1].cpu().detach().numpy()) > epsilon
-    rel_error = np.abs(((xt[-1] - x).cpu().detach().numpy())[mask] / (np.abs((x.cpu().detach().numpy())[mask]) + epsilon)) * 100
-    mre = np.mean(rel_error)
-    
-    # 计算其他误差指标
-    rmse = np.sqrt(np.mean(np.square((xt[-1] - x).cpu().detach().numpy())))
-    
-    # 打印结果
-    logging.info("\n" + "="*50)
-    logging.info("误差统计 (取所有样本平均)")
-    logging.info("="*50)
-    logging.info(f"平均绝对误差 (MAE): {mae:.6f}")
-    logging.info(f"平均相对误差 (MRE): {mre:.6f}%")
-    logging.info(f"均xt[-1]方根误差 (RMSE): {rmse:.6f}")
-    logging.info("="*50 + "\n")
     plot_2d_results(
         data1=torch.mean(xt[-1],dim = 1),
         data2=torch.mean(x,dim = 1),

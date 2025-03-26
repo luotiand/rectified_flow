@@ -131,7 +131,7 @@ class MLP2d_ns(nn.Module):
         self.main_net = nn.Sequential(
             nn.Linear(3*dim**2, h_dim),  # 新增x特征
             nn.ReLU(),
-            nn.Linear(1024, 4*h_dim),
+            nn.Linear(h_dim, 4*h_dim),
             nn.ReLU(),
             nn.Linear(4*h_dim, dim**2)
         )
