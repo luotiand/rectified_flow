@@ -11,7 +11,7 @@ import time
 import matplotlib.pyplot as plt
 from script.dataset import MyDataset_ns
 from torch.utils.data import DataLoader
-from scorenet.scorenet import MLP1d, MLP2d, FNO, CNN,MLP2d_ns,CNN_add
+from scorenet.scorenet import MLP1d, MLP2d, FNO, CNN,MLP2d_ns,CNN_add,CNN_ns
 import argparse
 import logging
 torch.set_default_dtype(torch.double)
@@ -95,7 +95,7 @@ def main(config):
         drop_last=True
     )
     # 动态加载模型类
-    scorenet_model = globals()[scorenet_model_class](dim = 64, h_dim = 256)
+    scorenet_model = globals()[scorenet_model_class]()
     logging.info(f"Model file will be saved as: {model_name}")
 
     # 检查多 GPU 环境
@@ -149,8 +149,8 @@ def main(config):
                 torch.cuda.empty_cache()
             training_loss[it] = loss.item()
 
-            if (it+1) % (niter//8) == 0:
-                new_lr = opt.param_groups[0]['lr'] / 8
+            if (it+1) % (niter//5) == 0:
+                new_lr = opt.param_groups[0]['lr'] / 5
                 logging.info(f"Reducing learning rate from {opt.param_groups[0]['lr']} to {new_lr}")
                 opt.param_groups[0]['lr'] = new_lr
 

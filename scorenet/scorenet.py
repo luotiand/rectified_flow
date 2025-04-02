@@ -121,11 +121,7 @@ class MLP2d_ns(nn.Module):
         self.k_list = k_list
         
         # 时间核参数化
-        self.time_kernel = nn.Sequential(
-            nn.Linear(6, dim**2),  # 6个特征 → 空间维度
-            nn.ReLU(),
-            nn.Linear(dim**2, dim**2)
-        )
+        self.time_kernel = nn.Linear(6, dim**2)  # 6个特征 → 空间维度
         
         # 主网络 (输入维度调整为3*dim²)
         self.main_net = nn.Sequential(
@@ -222,7 +218,7 @@ class CNN(nn.Module):
         x_3 = self.up(x_2)
         x_4 = self.out(x_3)
         z = x_4.squeeze(1)+x
-        return z
+        return z* x_std + x_mean
 
 # class CNN_add(nn.Module):
 #     def __init__(self, in_channels=3, out_channels=1, width=16):
@@ -294,6 +290,83 @@ class CNN_add(nn.Module):
         z = x_3.squeeze(1)+x
         return z
 
+class CNN_ns(nn.Module):
+    def __init__(self, 
+                 in_channels=3,
+                 out_channels=1,
+                 width=16,
+                 device='cuda',
+                 dim=64, 
+                 time_steps=10,
+                 k_list=[1, 2]):
+        super().__init__()
+        self.dim = dim
+        self.device = device
+        self.time_steps = time_steps
+        self.k_list = k_list
+        self.width = width
+        
+        # 3D卷积结构 (保持时间维度)
+        self.down = nn.Sequential(
+            nn.Conv3d(in_channels, width, kernel_size=(1,3,3), padding=(0,1,1)),
+            nn.ReLU(inplace=True),
+            nn.Conv3d(width, width*4, kernel_size=(3,3,3), padding=(1,1,1)),
+            nn.ReLU(inplace=True),
+        )
+        
+        self.up = nn.Sequential(
+            nn.ConvTranspose3d(width*4, width, kernel_size=(3,3,3), padding=(1,1,1)),
+            nn.ReLU(inplace=True),
+            nn.ConvTranspose3d(width, out_channels, kernel_size=(1,3,3), padding=(0,1,1)),
+        )
+        
+        # 时间核参数化（单通道）
+        self.time_kernel = nn.Sequential(
+            nn.Linear(6, 1),  # 将6维特征压缩到1通道
+            nn.Tanh()
+        )
+
+    def generate_time_features(self, t: torch.Tensor) -> torch.Tensor:
+        """生成单通道时间特征"""
+        bs = t.shape[0]
+        
+        # 生成原始6维特征
+        t_expanded = t.squeeze(-1).squeeze(-1)
+        t_expanded = t_expanded.unsqueeze(1).expand(-1, self.time_steps, -1)
+        
+        features = []
+        for k in self.k_list:
+            features.append((t_expanded / k).clamp(0, 1))
+            features.append(1 - torch.exp(-t_expanded / k))
+            features.append(torch.sin(t_expanded * torch.pi / k))
+        
+        # 合并后通过核函数 [bs, T, 6] → [bs, T, 1]
+        time_feat = self.time_kernel(torch.cat(features, dim=-1))
+        return time_feat  # [bs, T, 1]
+
+    def forward(self, a: torch.Tensor, x: torch.Tensor, t: torch.Tensor):
+        # 输入维度处理
+        bs, T, H, W = a.shape
+        
+        # 标准化处理
+        a_norm = a.unsqueeze(1)  # [bs, 1, T, H, W]
+        x_norm = x.unsqueeze(1)  # [bs, 1, T, H, W]
+        # print(f"初始显存: {torch.cuda.memory_allocated()/1e9:.2f} GB")
+        # 生成单通道时间特征 [bs, T, 1] → [bs, 1, T, H, W]
+        time_feat = self.generate_time_features(t)
+        time_feat = time_feat.unsqueeze(-1).unsqueeze(-1)  # [bs, T, 1, 1, 1]
+        time_feat = time_feat.expand(-1, -1, -1, H, W).permute(0,2,1,3,4)  # [bs, 1, T, H, W]
+        # print(f"时间特征生成后: {torch.cuda.memory_allocated()/1e9:.2f} GB")
+        # 特征拼接 (总通道数=1+1+1=3)
+        x_in = torch.cat([a_norm, x_norm, time_feat], dim=1)  # [bs, 3, T, H, W]
+        # print(x_in.shape)
+        # 3D卷积处理
+        x_2 = self.down(x_in)
+        # print(f"下采样后: {torch.cuda.memory_allocated()/1e9:.2f} GB")
+        x_3 = self.up(x_2)  # [bs, 1, T, H, W]
+        # print(f"上采样后: {torch.cuda.memory_allocated()/1e9:.2f} GB")
+        # 输出处理
+        return x_3.squeeze(1) + x  # [bs, T, H, W]
 class FourierLayer2D(nn.Module):
     def __init__(self, in_channels, out_channels, modes):
         """
